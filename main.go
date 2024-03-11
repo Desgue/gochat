@@ -1,48 +1,26 @@
 package main
 
 import (
-	"fmt"
+	"log"
+	"net/http"
 	"time"
-
-	_ "github.com/gorilla/websocket"
 )
 
 func main() {
-	ch := make(chan int)
-	num := 1000000000000000
-	go wait1(ch, num)
+	hub := NewHub()
 
-	wait2(num)
-}
+	http.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+		serveWs(hub, w, r)
+	})
 
-func wait1(ch chan<- int, num int) {
-	start := time.Now()
-	for i := range num {
-		if i%100000000 == 0 {
-			ch <- i
-		}
+	go hub.Run()
+
+	server := http.Server{
+		Addr:              "localhost:8000",
+		ReadHeaderTimeout: 3 * time.Second,
 	}
-	fmt.Printf("goroutine total time elapsesed %s", time.Since(start))
-	defer close(ch)
-}
 
-func wait2(num int) {
-	start := time.Now()
-	for i := range num {
-		if i%100000000 == 0 {
-			continue
-		}
+	if err := server.ListenAndServe(); err != nil {
+		log.Fatalln("err servig http: ", err)
 	}
-	fmt.Printf("normal total time elapsesed %s", time.Since(start))
 }
-
-/* func Run() error {
-	return http.ListenAndServe(":8000", nil)
-}
-
-func setuAPI() {
-	manager := NewManager()
-
-	http.HandleFunc("/ws", manager.serveWs)
-}
-*/

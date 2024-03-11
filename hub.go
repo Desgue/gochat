@@ -1,57 +1,74 @@
 package main
 
 import (
+	"encoding/json"
 	"log"
-	"net/http"
-	"sync"
-
-	"github.com/gorilla/websocket"
 )
 
-var (
-	websocketUpgrader = websocket.Upgrader{
-		ReadBufferSize:  1024,
-		WriteBufferSize: 1024,
+type Message struct {
+	MessageId string `json:"messageId"`
+	ClientId  string `json:"clientId"`
+	Text      string `json:"text"`
+}
+
+// Hub mantem um conjunto de clientes ativos e envia menssagens aos clientes
+type Hub struct {
+	// Clientes registrados
+	Clients  map[*Client]bool
+	Messages []*Message
+
+	// chan *Message ->  responsavel por receber as mensagens lidas
+	// e enviar para cada um dos clientes registrados
+	Broadcast chan *Message
+
+	// Registra a requisiçao dos clientes
+	Register chan *Client
+	// Desregistra a requisiçao dos clientes
+	Unregister chan *Client
+}
+
+func NewHub() *Hub {
+	return &Hub{
+		Broadcast:  make(chan *Message),
+		Register:   make(chan *Client),
+		Unregister: make(chan *Client),
+		Clients:    make(map[*Client]bool),
 	}
-)
-
-type Manager struct {
-	clients ClientList
-	sync.RWMutex
 }
 
-func NewManager() *Manager {
-	return &Manager{}
-}
-
-func (m *Manager) serveWs(w http.ResponseWriter, r *http.Request) {
-	log.Println("new connection")
-
-	// Upgrade regular http connection to websocket
-	conn, err := websocketUpgrader.Upgrade(w, r, nil)
-	if err != nil {
-		log.Println(err)
-		return
-	}
-	defer conn.Close()
-	client := NewClient(conn, m)
-	m.addClient(client)
-
-	// Start process that read messages
-	go client.readMessages()
-}
-
-func (m *Manager) addClient(client *Client) {
-	m.Lock()
-	defer m.Unlock()
-	m.clients[client] = true
-}
-
-func (m *Manager) removeClient(client *Client) {
-	m.Lock()
-	defer m.Unlock()
-	if _, ok := m.clients[client]; ok {
-		client.conn.Close()
-		delete(m.clients, client)
+func (h *Hub) Run() {
+	for {
+		select {
+		case client := <-h.Register:
+			h.Clients[client] = true
+			for _, msg := range h.Messages {
+				payload, err := json.Marshal(msg)
+				if err != nil {
+					log.Println("error decoding message: ", err)
+				}
+				client.Send <- payload
+			}
+			log.Println("New Client ID registered: ", client.Id)
+		case client := <-h.Unregister:
+			if _, ok := h.Clients[client]; ok {
+				delete(h.Clients, client)
+				close(client.Send)
+				log.Println("Unregistering ")
+			}
+		case message := <-h.Broadcast:
+			h.Messages = append(h.Messages, message)
+			payload, err := json.Marshal(message)
+			if err != nil {
+				log.Println("error decoding message: ", err)
+			}
+			for client := range h.Clients {
+				select {
+				case client.Send <- payload:
+				default:
+					close(client.Send)
+					delete(h.Clients, client)
+				}
+			}
+		}
 	}
 }
